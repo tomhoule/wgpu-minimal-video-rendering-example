@@ -1,13 +1,16 @@
+use log::*;
 use pollster::block_on;
-use std::num::NonZeroU32;
+use std::{fmt, num::NonZeroU32};
 
 const WIDTH: u32 = 1792;
 const HEIGHT: u32 = 1024;
 const PIXEL_COUNT: u32 = WIDTH * HEIGHT;
-const OUTPUT_BUFFER_SIZE: u64 = std::mem::size_of::<u32>() as u64 * PIXEL_COUNT as u64;
+const FRAME_SIZE: u64 = std::mem::size_of::<u32>() as u64 * PIXEL_COUNT as u64;
 const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+const FRAME_COUNT: u64 = 200;
+const OUTPUT_BUFFER_SIZE: u64 = FRAME_SIZE * FRAME_COUNT;
 
-const VERTEX_SHADER: &str = r#"
+const SHADERS: &str = r#"
 
 [[stage(vertex)]]
 fn vertex_main() {}
@@ -18,7 +21,7 @@ fn fragment_main() -> [[location(0)]] vec4<f32> {
 }
 "#;
 
-fn main() {
+fn main() -> Result<(), Error> {
     env_logger::init();
     let instance = wgpu::Instance::new(wgpu::Backends::VULKAN);
     let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -49,7 +52,7 @@ fn main() {
 
     let shader_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
         label: Some("tom's vertex shader"),
-        source: wgpu::ShaderSource::Wgsl(VERTEX_SHADER.into()),
+        source: wgpu::ShaderSource::Wgsl(SHADERS.into()),
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("tom's pipeline"),
@@ -81,27 +84,12 @@ fn main() {
         }),
     });
 
-    let mut webp_encoder = webp_animation::Encoder::new_with_options(
-        (WIDTH, HEIGHT),
-        webp_animation::EncoderOptions {
-            minimize_size: true,
-            kmin: 0,
-            kmax: 0,
-            allow_mixed: false,
-            verbose: false,
-            color_mode: webp_animation::ColorMode::Rgba,
-            encoding_config: None,
-        },
-    )
-    .unwrap();
-    let mut timestamp_ms = 0;
+    info!("Rendering...");
 
-    for n in 0..200 {
-        timestamp_ms += 100;
-        let red_value = (n as f64 / 40.0).sin().abs() * 0.8;
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("tom's command encoder"),
-        });
+    for n in 0..FRAME_COUNT {
+        let green_value = (n as f64 / 40.0).sin().abs() * 0.8;
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -111,9 +99,9 @@ fn main() {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: red_value,
-                            g: 0.0,
-                            b: 0.0,
+                            r: 0.1,
+                            g: green_value,
+                            b: 0.1,
                             a: 1.0,
                         }),
                         store: true,
@@ -135,7 +123,7 @@ fn main() {
             wgpu::ImageCopyBuffer {
                 buffer: &output_buffer,
                 layout: wgpu::ImageDataLayout {
-                    offset: 0,
+                    offset: n * FRAME_SIZE,
                     bytes_per_row: Some(
                         NonZeroU32::new(WIDTH * std::mem::size_of::<u32>() as u32).unwrap(),
                     ),
@@ -150,31 +138,39 @@ fn main() {
         );
 
         queue.submit([encoder.finish()]);
-
-        {
-            let buffer_slice = output_buffer.slice(..);
-
-            let mapping = buffer_slice.map_async(wgpu::MapMode::Read);
-            device.poll(wgpu::Maintain::Wait);
-            block_on(mapping).unwrap();
-
-            let data = buffer_slice.get_mapped_range();
-
-            webp_encoder.add_frame(&data, timestamp_ms).unwrap();
-
-            // use image::ImageBuffer;
-            // let buffer = ImageBuffer::<image::Rgba<u8>, _>::from_raw(WIDTH, HEIGHT, data).unwrap();
-            // buffer.save("image.png").unwrap();
-        }
-
-        output_buffer.unmap();
     }
 
-    let webp = webp_encoder.finalize(201 * 100).unwrap();
+    info!("Writing frames now");
+    {
+        let buffer_slice = output_buffer.slice(..);
 
-    std::fs::write("./out.webp", &webp).unwrap();
+        let mapping = buffer_slice.map_async(wgpu::MapMode::Read);
+        device.poll(wgpu::Maintain::Wait);
+        block_on(mapping).unwrap();
+
+        let data = buffer_slice.get_mapped_range();
+
+        for idx in 0..FRAME_COUNT {
+            info!("frame {}/{}", idx, FRAME_COUNT);
+            let file_name = format!("./out/{:05}.png", idx);
+            let mut file = std::fs::File::create(&file_name).unwrap();
+            let encoder = image::codecs::png::PngEncoder::new(&mut file);
+            let start = idx as usize * FRAME_SIZE as usize;
+            let end = start as usize + FRAME_SIZE as usize;
+            encoder
+                .encode(&data[start..end], WIDTH, HEIGHT, image::ColorType::Rgba8)
+                .unwrap();
+        }
+    }
+
+    // debug!("Unmapping output_buffer");
+    // output_buffer.unmap();
 
     println!("Done");
+
+    // Don't run on destructors: rely on the process dying to clean up, dropping everything cleanly
+    // is slow.
+    std::process::exit(0);
 }
 
 fn texture(device: &wgpu::Device) -> wgpu::Texture {
@@ -204,4 +200,18 @@ fn output_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         mapped_at_creation: false,
     };
     device.create_buffer(&output_buffer_desc)
+}
+
+struct Error(Box<dyn std::error::Error>);
+
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("BOOM")
+    }
+}
+
+impl<E: std::error::Error + 'static> From<E> for Error {
+    fn from(e: E) -> Error {
+        Error(Box::new(e))
+    }
 }
