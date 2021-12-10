@@ -1,0 +1,8 @@
+[package]
+name = "wgpu-webp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pollster = "0.2.4"
+wgpu = { version = "0.11.1", default-features = false }
