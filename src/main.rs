@@ -1,6 +1,6 @@
 use log::*;
 use pollster::block_on;
-use std::{f64::consts::TAU, fmt, num::NonZeroU32, sync::Arc};
+use std::{f64::consts::TAU, fmt, num::NonZeroU32, sync::mpsc};
 
 const WIDTH: u32 = 1792;
 const HEIGHT: u32 = 1024;
@@ -42,55 +42,6 @@ fn main() -> Result<(), Error> {
         None,
     ))
     .unwrap();
-    let device = Arc::new(device);
-
-    // // Constantly poll the device.
-    // std::thread::spawn(move || loop {
-    //     device.poll(wgpu::Maintain::Wait);
-    // });
-
-    // video
-    use dcv_color_primitives::{ColorSpace, ImageFormat, PixelFormat};
-    let mut video_file = std::io::BufWriter::new(std::fs::File::create("out.y4m").unwrap());
-    let mut video_encoder = y4m::encode(
-        WIDTH as usize,
-        HEIGHT as usize,
-        y4m::Ratio::new(FRAMES_PER_SECOND as usize, 1),
-    )
-    .with_colorspace(y4m::Colorspace::C444)
-    .write_header(&mut video_file)
-    .unwrap();
-    let mut buf = Vec::new();
-    let mut buf2 = Vec::new();
-    let mut buf3 = Vec::new();
-    let source_format = ImageFormat {
-        pixel_format: PixelFormat::Bgra,
-        color_space: ColorSpace::Lrgb,
-        num_planes: 1,
-    };
-    let mut sizes = [0, 0, 0];
-
-    dbg!(sizes);
-
-    let target_format = ImageFormat {
-        pixel_format: PixelFormat::I444,
-        color_space: ColorSpace::Bt601,
-        num_planes: 3,
-    };
-
-    dcv_color_primitives::get_buffers_size(WIDTH, HEIGHT, &target_format, None, &mut sizes)
-        .unwrap();
-
-    for (b, size) in [&mut buf, &mut buf2, &mut buf3]
-        .into_iter()
-        .zip(sizes.iter())
-    {
-        b.resize(*size, 0);
-    }
-
-    // std::thread::spawn(move || {
-    //     output_buffer.destroy();
-    // });
 
     let texture = texture(&device);
     let view = texture.create_view(&Default::default());
@@ -136,14 +87,21 @@ fn main() -> Result<(), Error> {
         }),
     });
 
+    // Spawn the video encoding thread.
+    let (sender, receiver) = mpsc::channel();
+    let video_thread = std::thread::spawn(move || video_encoding_thread(receiver));
+
     info!("Rendering...");
     for frame_idx in 0..TOTAL_FRAMES {
         debug!("Rendering frame {}/{}", frame_idx + 1, TOTAL_FRAMES);
         let green_value = ((frame_idx as f64 / TOTAL_FRAMES as f64) * TAU * 5.0)
             .sin()
-            .abs();
+            .abs()
+            * 0.8
+            + 0.1;
         assert!(green_value >= 0.0);
         assert!(green_value <= 1.0);
+
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -205,49 +163,20 @@ fn main() -> Result<(), Error> {
             block_on(mapping).unwrap();
 
             let data = buffer_slice.get_mapped_range();
-
-            debug!("Got mapped range...");
-
-            dcv_color_primitives::convert_image(
-                WIDTH,
-                HEIGHT,
-                &source_format,
-                None,
-                &[&data[0..FRAME_SIZE as usize]],
-                &target_format,
-                None,
-                &mut [
-                    &mut buf[0..sizes[0]],
-                    &mut buf2[0..sizes[1]],
-                    &mut buf3[0..sizes[2]],
-                ],
-            )
-            .unwrap();
-
-            let frame = y4m::Frame::new(
-                [&buf[0..sizes[0]], &buf2[0..sizes[1]], &buf3[0..sizes[2]]],
-                None,
-            );
-
-            video_encoder.write_frame(&frame).unwrap();
+            sender.send(data.to_owned())?;
         }
         output_buffer.unmap();
     }
 
-    // sender.send(output_buffer)?;
-
     info!("Rendering: done");
 
-    drop(video_encoder);
-    let video_file = video_file.into_inner().unwrap();
-    video_file.sync_all().unwrap();
-    drop(video_file);
+    drop(sender);
+    video_thread.join().unwrap();
 
-    info!("Cleanup: done");
-
-    // Don't run on destructors: rely on the process dying to clean up, dropping everything cleanly
-    // is slow.
-    std::process::exit(0);
+    // // Don't run on destructors: rely on the process dying to clean up, dropping everything cleanly
+    // // is slow.
+    // std::process::exit(0);
+    Ok(())
 }
 
 fn texture(device: &wgpu::Device) -> wgpu::Texture {
@@ -298,4 +227,63 @@ impl<E: std::error::Error + 'static> From<E> for Error {
     fn from(e: E) -> Error {
         Error(Box::new(e), &std::panic::Location::caller())
     }
+}
+
+fn video_encoding_thread(receiver: mpsc::Receiver<Vec<u8>>) {
+    use dcv_color_primitives::{ColorSpace, ImageFormat, PixelFormat};
+
+    let mut video_file = std::io::BufWriter::new(std::fs::File::create("out.y4m").unwrap());
+
+    let mut video_encoder = y4m::encode(
+        WIDTH as usize,
+        HEIGHT as usize,
+        y4m::Ratio::new(FRAMES_PER_SECOND as usize, 1),
+    )
+    .with_colorspace(y4m::Colorspace::C444)
+    .write_header(&mut video_file)
+    .unwrap();
+
+    let source_format = ImageFormat {
+        pixel_format: PixelFormat::Bgra,
+        color_space: ColorSpace::Lrgb,
+        num_planes: 1,
+    };
+
+    let target_format = ImageFormat {
+        pixel_format: PixelFormat::I444,
+        color_space: ColorSpace::Bt601,
+        num_planes: 3,
+    };
+
+    let mut sizes = [0, 0, 0];
+
+    dcv_color_primitives::get_buffers_size(WIDTH, HEIGHT, &target_format, None, &mut sizes)
+        .unwrap();
+
+    debug!("YUV channel buffer sizes: {:?}", sizes);
+
+    // Three buffers for the three YUV channels.
+    let mut buf1 = vec![0; sizes[0]];
+    let mut buf2 = vec![0; sizes[1]];
+    let mut buf3 = vec![0; sizes[2]];
+
+    while let Ok(frame) = receiver.recv() {
+        dcv_color_primitives::convert_image(
+            WIDTH,
+            HEIGHT,
+            &source_format,
+            None,
+            &[&frame[0..FRAME_SIZE as usize]],
+            &target_format,
+            None,
+            &mut [&mut buf1, &mut buf2, &mut buf3],
+        )
+        .unwrap();
+
+        let frame = y4m::Frame::new([&buf1, &buf2, &buf3], None);
+
+        video_encoder.write_frame(&frame).unwrap();
+    }
+
+    info!("Encoding: done");
 }
