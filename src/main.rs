@@ -89,7 +89,7 @@ fn main() -> Result<(), Error> {
 
     // Spawn the video encoding thread.
     let (sender, receiver) = mpsc::channel();
-    let video_thread = std::thread::spawn(move || video_encoding_thread(receiver));
+    let video_thread = std::thread::spawn(move || video_encoding_thread(receiver).unwrap());
 
     info!("Rendering...");
     for frame_idx in 0..TOTAL_FRAMES {
@@ -138,9 +138,9 @@ fn main() -> Result<(), Error> {
                 buffer: &output_buffer,
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
-                    bytes_per_row: Some(
-                        NonZeroU32::new(WIDTH * std::mem::size_of::<u32>() as u32).unwrap(),
-                    ),
+                    bytes_per_row: Some(NonZeroU32::new(
+                        WIDTH * std::mem::size_of::<u32>() as u32,
+                    ).unwrap()),
                     rows_per_image: Some(NonZeroU32::new(HEIGHT).unwrap()),
                 },
             },
@@ -160,7 +160,7 @@ fn main() -> Result<(), Error> {
 
             let mapping = buffer_slice.map_async(wgpu::MapMode::Read);
             device.poll(wgpu::Maintain::Wait);
-            block_on(mapping).unwrap();
+            block_on(mapping)?;
 
             let data = buffer_slice.get_mapped_range();
             sender.send(data.to_owned())?;
@@ -173,9 +173,6 @@ fn main() -> Result<(), Error> {
     drop(sender);
     video_thread.join().unwrap();
 
-    // // Don't run on destructors: rely on the process dying to clean up, dropping everything cleanly
-    // // is slow.
-    // std::process::exit(0);
     Ok(())
 }
 
@@ -229,7 +226,7 @@ impl<E: std::error::Error + 'static> From<E> for Error {
     }
 }
 
-fn video_encoding_thread(receiver: mpsc::Receiver<Vec<u8>>) {
+fn video_encoding_thread(receiver: mpsc::Receiver<Vec<u8>>) -> Result<(), Error> {
     use dcv_color_primitives::{ColorSpace, ImageFormat, PixelFormat};
 
     let mut video_file = std::io::BufWriter::new(std::fs::File::create("out.y4m").unwrap());
@@ -257,8 +254,7 @@ fn video_encoding_thread(receiver: mpsc::Receiver<Vec<u8>>) {
 
     let mut sizes = [0, 0, 0];
 
-    dcv_color_primitives::get_buffers_size(WIDTH, HEIGHT, &target_format, None, &mut sizes)
-        .unwrap();
+    dcv_color_primitives::get_buffers_size(WIDTH, HEIGHT, &target_format, None, &mut sizes)?;
 
     debug!("YUV channel buffer sizes: {:?}", sizes);
 
@@ -277,13 +273,13 @@ fn video_encoding_thread(receiver: mpsc::Receiver<Vec<u8>>) {
             &target_format,
             None,
             &mut [&mut buf1, &mut buf2, &mut buf3],
-        )
-        .unwrap();
+        )?;
 
         let frame = y4m::Frame::new([&buf1, &buf2, &buf3], None);
 
-        video_encoder.write_frame(&frame).unwrap();
+        video_encoder.write_frame(&frame)?;
     }
 
     info!("Encoding: done");
+    Ok(())
 }
