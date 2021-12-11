@@ -4,29 +4,53 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib";
-      join-frames = pkgs.writeShellScriptBin "join-frames" ''
-        ffmpeg -r 60 -f image2 -i out/%05d.png -s 1792x1024 -vcodec libx264 -crf 15 -pix_fmt rgba test.mp4
-      '';
+      VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
     in
     {
-      defaultPackage."${system}" = {
+      defaultPackage."${system}" = pkgs.stdenv.mkDerivation {
+        name = "out.y4m";
         buildInputs = [
-          # pkgs.vulkan-headers
+          self.packages."${system}".wgpu-video-example
           pkgs.vulkan-loader
-          pkgs.ffmpeg
-          # pkgs.vulkan-tools-lunarg
-          # pkgs.vulkan-validation-layers
+          pkgs.vulkan-headers
+          pkgs.vulkan-tools-lunarg
+          pkgs.vulkan-validation-layers
           # pkgs.spirv-headers
         ];
+        src = builtins.path { name = "example-root"; path = ./.; };
+        buildPhase = ''
+          wgpu-video-example
+        '';
+        installPhase = ''
+          mkdir $out
+          mv out.y4m $out
+        '';
 
-        inherit LD_LIBRARY_PATH;
+        inherit LD_LIBRARY_PATH VK_LAYER_PATH;
       };
 
-      devShell."${system}" = pkgs.mkShell {
-        inputsFrom = [ self.defaultPackage."${system}" ];
-        packages = [ pkgs.mold join-frames ];
+      packages."${system}".wgpu-video-example = pkgs.rustPlatform.buildRustPackage
+        {
+          name = "wgpu-video-example";
+          src = builtins.path { name = "example-root"; path = ./.; };
+          buildInputs = [
+            pkgs.vulkan-loader
+            # pkgs.vulkan-headers
+            # pkgs.vulkan-tools-lunarg
+            # pkgs.vulkan-validation-layers
+            # pkgs.spirv-headers
+          ];
 
-        inherit LD_LIBRARY_PATH;
+          cargoLock = { lockFile = ./Cargo.lock; };
+
+          inherit LD_LIBRARY_PATH VK_LAYER_PATH;
+        };
+
+      devShell."${system}" = pkgs.mkShell {
+        inputsFrom = [ self.packages."${system}".wgpu-video-example ];
+        packages = [ pkgs.mold ];
+
+        inherit LD_LIBRARY_PATH VK_LAYER_PATH;
       };
     };
 }
