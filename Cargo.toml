@@ -4,11 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+dcv-color-primitives = "0.3.0"
 env_logger = "*"
 image = "0.23.14"
 log = "0.4.14"
 pollster = "0.2.4"
 wgpu = { version = "0.11.1", default-features = false }
+y4m = "0.7.0"
 
 # Set the default for dependencies.
 [profile.dev.package."*"]

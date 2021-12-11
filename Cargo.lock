@@ -250,6 +250,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dcv-color-primitives"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc527b8f4772be10c1fd82bf58ac230531cf8aeaed9c6bfc13091b1636b92288"
+dependencies = [
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "deflate"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1106,11 +1115,13 @@ dependencies = [
 name = "wgpu-webp"
 version = "0.1.0"
 dependencies = [
+ "dcv-color-primitives",
  "env_logger",
  "image",
  "log",
  "pollster",
  "wgpu",
+ "y4m",
 ]
 
 [[package]]
@@ -1143,3 +1154,9 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "y4m"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a72a9921af8237fe25097a1ae31c92a05c1d39b2454653ad48f2f407cf7a0dae"
